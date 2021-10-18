@@ -20,6 +20,44 @@ const ethWithAddress: RainbowToken = {
 
 type TokenListData = typeof RAINBOW_TOKEN_LIST_DATA;
 
+/**
+ * generateDerivedData generates derived data lists from RAINBOW_TOKEN_LIST_DATA.
+ */
+function generateDerivedData(tokenListData: TokenListData) {
+  const tokenList: RainbowToken[] = tokenListData.tokens.map(token => {
+    const { address: rawAddress, decimals, name, symbol, extensions } = token;
+    const address = rawAddress.toLowerCase();
+    return {
+      address,
+      decimals,
+      name,
+      symbol,
+      uniqueId: address,
+      ...extensions,
+    };
+  });
+
+  const tokenListWithEth = [ethWithAddress, ...tokenList];
+  const curatedRainbowTokenList = tokenListWithEth.filter(
+    t => t.isRainbowCurated
+  );
+
+  const derivedData: {
+    RAINBOW_TOKEN_LIST: Record<string, RainbowToken>;
+    CURATED_TOKENS: Record<string, RainbowToken>;
+    TOKEN_SAFE_LIST: Record<string, string>;
+  } = {
+    CURATED_TOKENS: keyBy(curatedRainbowTokenList, 'address'),
+    RAINBOW_TOKEN_LIST: keyBy(tokenListWithEth, 'address'),
+    TOKEN_SAFE_LIST: keyBy(
+      curatedRainbowTokenList.flatMap(({ name, symbol }) => [name, symbol]),
+      id => id.toLowerCase()
+    ),
+  };
+
+  return derivedData;
+}
+
 class RainbowTokenList {
   #tokenListData = RAINBOW_TOKEN_LIST_DATA;
 
@@ -52,94 +90,6 @@ class RainbowTokenList {
     );
 
     return JSON.parse(data);
-  }
-
-  #generateTokenList = memoize(
-    (tokenListData: TokenListData): RainbowToken[] => {
-      return tokenListData.tokens.map(token => {
-        const {
-          address: rawAddress,
-          decimals,
-          name,
-          symbol,
-          extensions,
-        } = token;
-        const address = rawAddress.toLowerCase();
-        return {
-          address,
-          decimals,
-          name,
-          symbol,
-          uniqueId: address,
-          ...extensions,
-        };
-      });
-    }
-  );
-
-  get #tokenList() {
-    return this.#generateTokenList(this.tokenListData);
-  }
-
-  #generateTokenListWithEth = memoize(
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    (tokenListData: TokenListData): RainbowToken[] => {
-      return [ethWithAddress, ...this.#tokenList];
-    }
-  );
-
-  get #tokenListWithEth() {
-    return this.#generateTokenListWithEth(this.tokenListData);
-  }
-
-  #generateRainbowTokenList = memoize(
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    (tokenListData: TokenListData): Record<string, RainbowToken> => {
-      return keyBy(this.#tokenListWithEth, 'address');
-    }
-  );
-
-  get RAINBOW_TOKEN_LIST() {
-    return this.#generateRainbowTokenList(this.tokenListData);
-  }
-
-  #generateCuratedRainbowTokenList = memoize(
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    (tokenListData: TokenListData): RainbowToken[] => {
-      return this.#tokenListWithEth.filter(t => t.isRainbowCurated);
-    }
-  );
-
-  get #curatedRainbowTokenList() {
-    return this.#generateCuratedRainbowTokenList(this.tokenListData);
-  }
-
-  #generateTokenSafeList = memoize(
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    (tokenListData: TokenListData): Record<string, string> => {
-      return keyBy(
-        this.#curatedRainbowTokenList.flatMap(({ name, symbol }) => [
-          name,
-          symbol,
-        ]),
-        id => id.toLowerCase()
-      );
-    }
-  );
-
-  get TOKEN_SAFE_LIST() {
-    return this.#generateTokenSafeList(this.tokenListData);
-  }
-
-  #generateCuratedTokens = memoize(
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    (tokenListData: TokenListData): Record<string, RainbowToken> => {
-      return keyBy(this.#curatedRainbowTokenList, 'address');
-    }
-  );
-
-  get CURATED_TOKENS() {
-    return this.#generateCuratedTokens(this.tokenListData);
   }
 }
 
