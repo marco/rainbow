@@ -1,11 +1,9 @@
 import { EventEmitter } from 'events';
 import path from 'path';
-import { keyBy, memoize } from 'lodash';
+import { keyBy } from 'lodash';
 import RNFS from 'react-native-fs';
 import RAINBOW_TOKEN_LIST_DATA from './rainbow-token-list.json';
 import { RainbowToken } from '@rainbow-me/entities';
-
-memoize.Cache = WeakMap;
 
 const RB_TOKEN_LIST_CACHE = 'rb-token-list.json';
 
