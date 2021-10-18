@@ -1,3 +1,4 @@
+import { EventEmitter } from 'events';
 import path from 'path';
 import { keyBy, memoize } from 'lodash';
 import RNFS from 'react-native-fs';
@@ -58,20 +59,32 @@ function generateDerivedData(tokenListData: TokenListData) {
   return derivedData;
 }
 
-class RainbowTokenList {
+async function readCachedData(): Promise<TokenListData> {
+  const data = await RNFS.readFile(
+    path.join(RNFS.CachesDirectoryPath, RB_TOKEN_LIST_CACHE),
+    'utf8'
+  );
+
+  return JSON.parse(data);
+}
+
+class RainbowTokenList extends EventEmitter {
   #tokenListData = RAINBOW_TOKEN_LIST_DATA;
+  #derivedData = generateDerivedData(RAINBOW_TOKEN_LIST_DATA);
 
   constructor() {
-    // Load in the cached list maybe.
-    this.#readCachedData()
+    super();
+
+    readCachedData()
       .then(data => {
         const bundledDate = new Date(this.tokenListData?.timestamp);
         const cachedDate = new Date(this.tokenListData?.timestamp);
 
         if (cachedDate > bundledDate) this.tokenListData = data;
+        this.emit('ready');
       })
       .catch((/* err */) => {
-        // Log it somehow?
+        // Log it somehow? Handle missing cache case?
       });
   }
 
@@ -81,15 +94,20 @@ class RainbowTokenList {
 
   set tokenListData(val) {
     this.#tokenListData = val;
+    this.#derivedData = generateDerivedData(RAINBOW_TOKEN_LIST_DATA);
+    this.emit('update', this.#derivedData);
   }
 
-  async #readCachedData() {
-    const data = await RNFS.readFile(
-      path.join(RNFS.CachesDirectoryPath, RB_TOKEN_LIST_CACHE),
-      'utf8'
-    );
+  get CURATED_TOKENS() {
+    return this.#derivedData.CURATED_TOKENS;
+  }
 
-    return JSON.parse(data);
+  get RAINBOW_TOKEN_LIST() {
+    return this.#derivedData.RAINBOW_TOKEN_LIST;
+  }
+
+  get TOKEN_SAFE_LIST() {
+    return this.#derivedData.TOKEN_SAFE_LIST;
   }
 }
 
