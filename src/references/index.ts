@@ -37,11 +37,7 @@ export {
   UNISWAP_V2_ROUTER_ABI,
   UNISWAP_V2_ROUTER_ADDRESS,
 } from './uniswap';
-export {
-  CURATED_UNISWAP_TOKENS,
-  RAINBOW_TOKEN_LIST,
-  TOKEN_SAFE_LIST,
-} from './rainbow-token-list';
+export { rainbowTokenList } from './rainbow-token-list';
 export {
   getWyreErrorOverride,
   wyreSupportedCountries,
