@@ -22,7 +22,7 @@ export async function rainbowFetch(url, opts) {
     // Any other fetch options
   };
 
-  if (!url) throw new Error('fancyFetch: Missing url argument');
+  if (!url) throw new Error('rainbowFetch: Missing url argument');
 
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), opts.timeout);

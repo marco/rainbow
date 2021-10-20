@@ -2,10 +2,16 @@ import { EventEmitter } from 'events';
 import path from 'path';
 import { keyBy } from 'lodash';
 import RNFS from 'react-native-fs';
+import { rainbowFetch } from '../../rainbow-fetch';
 import RAINBOW_TOKEN_LIST_DATA from './rainbow-token-list.json';
 import { RainbowToken } from '@rainbow-me/entities';
 
+// TODO: Make this a config value probably
+const RAINBOW_TOKEN_LIST_URL =
+  'http://metadata.p.rainbow.me/token-list/rainbow-token-list.json';
+
 const RB_TOKEN_LIST_CACHE = 'rb-token-list.json';
+const RB_TOKEN_LIST_ETAG = 'rb-token-list-etag.json';
 
 const ethWithAddress: RainbowToken = {
   address: 'eth',
@@ -18,6 +24,7 @@ const ethWithAddress: RainbowToken = {
 };
 
 type TokenListData = typeof RAINBOW_TOKEN_LIST_DATA;
+type ETagData = { etag: string };
 
 /**
  * generateDerivedData generates derived data lists from RAINBOW_TOKEN_LIST_DATA.
@@ -57,29 +64,44 @@ function generateDerivedData(tokenListData: TokenListData) {
   return derivedData;
 }
 
-async function readCachedData(): Promise<TokenListData> {
-  const data = await RNFS.readFile(
-    path.join(RNFS.CachesDirectoryPath, RB_TOKEN_LIST_CACHE),
+async function readRNFSJsonData<T>(filename: string): Promise<T | null> {
+  try {
+    const data = await RNFS.readFile(
+      path.join(RNFS.CachesDirectoryPath, filename),
+      'utf8'
+    );
+
+    return JSON.parse(data);
+  } catch (error) {
+    // todo: handle error better
+    return null;
+  }
+}
+
+function writeRNFSJsonData<T>(filename: string, data: T) {
+  return RNFS.writeFile(
+    path.join(RNFS.CachesDirectoryPath, filename),
+    JSON.stringify(data),
     'utf8'
   );
-
-  return JSON.parse(data);
 }
 
 class RainbowTokenList extends EventEmitter {
   #tokenListData = RAINBOW_TOKEN_LIST_DATA;
   #derivedData = generateDerivedData(RAINBOW_TOKEN_LIST_DATA);
+  #updateJob: Promise<{ newData: Boolean; error?: Error }> | null = null;
 
   constructor() {
     super();
 
-    readCachedData()
-      .then(data => {
-        const bundledDate = new Date(this.tokenListData?.timestamp);
-        const cachedDate = new Date(this.tokenListData?.timestamp);
+    readRNFSJsonData<TokenListData>(RB_TOKEN_LIST_CACHE)
+      .then(cachedData => {
+        if (cachedData?.timestamp) {
+          const bundledDate = new Date(this.tokenListData?.timestamp);
+          const cachedDate = new Date(cachedData?.timestamp);
 
-        if (cachedDate > bundledDate) this.tokenListData = data;
-        this.emit('ready');
+          if (cachedDate > bundledDate) this.tokenListData = cachedData;
+        }
       })
       .catch((/* err */) => {
         // Log it somehow? Handle missing cache case?
@@ -93,7 +115,72 @@ class RainbowTokenList extends EventEmitter {
   set tokenListData(val) {
     this.#tokenListData = val;
     this.#derivedData = generateDerivedData(RAINBOW_TOKEN_LIST_DATA);
-    this.emit('update', this.#derivedData);
+    this.emit('update');
+  }
+
+  update() {
+    // deduplicate calls to update.
+    if (!this.#updateJob) {
+      this.#updateJob = this.#update();
+    }
+
+    return this.#updateJob;
+  }
+
+  async #update(): Promise<{ newData: Boolean; error?: Error }> {
+    const etagData = await readRNFSJsonData<ETagData>(RB_TOKEN_LIST_ETAG);
+    const etag = etagData?.etag;
+    const commonHeaders = {
+      Accept: 'application/json',
+    };
+
+    try {
+      const { data, status, headers } = await rainbowFetch(
+        RAINBOW_TOKEN_LIST_URL,
+        {
+          headers: etag
+            ? { ...commonHeaders, 'If-None-Match': etag }
+            : { ...commonHeaders },
+          method: 'get',
+        }
+      );
+
+      if (status === 200) {
+        const currentDate = new Date(this.tokenListData?.timestamp);
+        const freshDate = new Date(data?.timestamp);
+        if (freshDate > currentDate) {
+          let work = [
+            writeRNFSJsonData<TokenListData>(
+              RB_TOKEN_LIST_CACHE,
+              data as TokenListData
+            ),
+          ];
+
+          if (headers.get('etag')) {
+            work.push(
+              writeRNFSJsonData<ETagData>(RB_TOKEN_LIST_ETAG, {
+                etag: headers.get('etag'),
+              })
+            );
+          }
+
+          await Promise.all(work);
+          this.tokenListData = data as TokenListData;
+          return { newData: true };
+        }
+      }
+      // handle 304 or other status codes?
+      return { newData: false };
+    } catch (error) {
+      // TODO: more here? log?
+      return {
+        error:
+          error instanceof Error ? error : new Error(`Error updating data`),
+        newData: false,
+      };
+    } finally {
+      this.#updateJob = null; // clear update singleton
+    }
   }
 
   get CURATED_TOKENS() {
