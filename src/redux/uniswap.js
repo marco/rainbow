@@ -140,12 +140,16 @@ export const uniswapUpdateFavorites = (assetAddress, add = true) => (
 
 // -- Reducer --------------------------------------------------------------- //
 export const INITIAL_UNISWAP_STATE = {
-  allTokens: rainbowTokenList.RAINBOW_TOKEN_LIST,
+  get allTokens() {
+    return rainbowTokenList.RAINBOW_TOKEN_LIST;
+  },
   favorites: DefaultUniswapFavorites['mainnet'],
   fetchingUniswap: false,
   loadingAllTokens: true,
   loadingUniswap: false,
-  pairs: rainbowTokenList.CURATED_TOKENS,
+  get pairs() {
+    return rainbowTokenList.CURATED_TOKENS;
+  },
 };
 
 export default (state = INITIAL_UNISWAP_STATE, action) =>
