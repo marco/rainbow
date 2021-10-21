@@ -5,6 +5,7 @@ import RNFS from 'react-native-fs';
 import { rainbowFetch } from '../../rainbow-fetch';
 import RAINBOW_TOKEN_LIST_DATA from './rainbow-token-list.json';
 import { RainbowToken } from '@rainbow-me/entities';
+import logger from 'logger';
 
 // TODO: Make this a config value probably
 const RAINBOW_TOKEN_LIST_URL =
@@ -24,7 +25,7 @@ const ethWithAddress: RainbowToken = {
 };
 
 type TokenListData = typeof RAINBOW_TOKEN_LIST_DATA;
-type ETagData = { etag: string };
+type ETagData = { etag: string | null };
 
 /**
  * generateDerivedData generates derived data lists from RAINBOW_TOKEN_LIST_DATA.
@@ -73,23 +74,75 @@ async function readRNFSJsonData<T>(filename: string): Promise<T | null> {
 
     return JSON.parse(data);
   } catch (error) {
-    // todo: handle error better
+    // TODO: handle missing file case before logging to sentry.
+    logger.error(error);
     return null;
   }
 }
 
-function writeRNFSJsonData<T>(filename: string, data: T) {
-  return RNFS.writeFile(
-    path.join(RNFS.CachesDirectoryPath, filename),
-    JSON.stringify(data),
-    'utf8'
-  );
+async function writeRNFSJsonData<T>(filename: string, data: T) {
+  try {
+    await RNFS.writeFile(
+      path.join(RNFS.CachesDirectoryPath, filename),
+      JSON.stringify(data),
+      'utf8'
+    );
+  } catch (error) {
+    logger.sentry(`Token List: Error saving ${filename}`);
+    logger.sentry(error);
+  }
+}
+
+async function getTokenListUpdate(
+  currentTokenListData: TokenListData
+): Promise<{
+  newTokenList?: TokenListData;
+  status?: Response['status'];
+}> {
+  const etagData = await readRNFSJsonData<ETagData>(RB_TOKEN_LIST_ETAG);
+  const etag = etagData?.etag;
+  const commonHeaders = {
+    Accept: 'application/json',
+  };
+
+  const { data, status, headers } = await rainbowFetch(RAINBOW_TOKEN_LIST_URL, {
+    headers: etag
+      ? { ...commonHeaders, 'If-None-Match': etag }
+      : { ...commonHeaders },
+    method: 'get',
+  });
+
+  if (status === 200) {
+    const currentDate = new Date(currentTokenListData?.timestamp);
+    const freshDate = new Date((data as TokenListData)?.timestamp);
+    if (freshDate > currentDate) {
+      let work = [
+        writeRNFSJsonData<TokenListData>(
+          RB_TOKEN_LIST_CACHE,
+          data as TokenListData
+        ),
+      ];
+
+      if ((headers as Headers).get('etag')) {
+        work.push(
+          writeRNFSJsonData<ETagData>(RB_TOKEN_LIST_ETAG, {
+            etag: (headers as Headers).get('etag'),
+          })
+        );
+      }
+
+      await Promise.all(work);
+      return { newTokenList: data as TokenListData, status };
+    }
+  }
+  // TODO: also set an update interval to skip on so we don't make tiny network requests every time the app opens?
+  return { newTokenList: undefined, status };
 }
 
 class RainbowTokenList extends EventEmitter {
-  #tokenListData = RAINBOW_TOKEN_LIST_DATA;
+  #tokenListDataStorage = RAINBOW_TOKEN_LIST_DATA;
   #derivedData = generateDerivedData(RAINBOW_TOKEN_LIST_DATA);
-  #updateJob: Promise<{ newData: Boolean; error?: Error }> | null = null;
+  #updateJob: Promise<void> | null = null;
 
   constructor() {
     super();
@@ -97,10 +150,10 @@ class RainbowTokenList extends EventEmitter {
     readRNFSJsonData<TokenListData>(RB_TOKEN_LIST_CACHE)
       .then(cachedData => {
         if (cachedData?.timestamp) {
-          const bundledDate = new Date(this.tokenListData?.timestamp);
+          const bundledDate = new Date(this.#tokenListData?.timestamp);
           const cachedDate = new Date(cachedData?.timestamp);
 
-          if (cachedDate > bundledDate) this.tokenListData = cachedData;
+          if (cachedDate > bundledDate) this.#tokenListData = cachedData;
         }
       })
       .catch((/* err */) => {
@@ -108,12 +161,13 @@ class RainbowTokenList extends EventEmitter {
       });
   }
 
-  get tokenListData() {
-    return this.#tokenListData;
+  // Wrapping #tokenListDataStorage so we can add events around updates.
+  get #tokenListData() {
+    return this.#tokenListDataStorage;
   }
 
-  set tokenListData(val) {
-    this.#tokenListData = val;
+  set #tokenListData(val) {
+    this.#tokenListDataStorage = val;
     this.#derivedData = generateDerivedData(RAINBOW_TOKEN_LIST_DATA);
     this.emit('update');
   }
@@ -127,59 +181,31 @@ class RainbowTokenList extends EventEmitter {
     return this.#updateJob;
   }
 
-  async #update(): Promise<{ newData: Boolean; error?: Error }> {
-    const etagData = await readRNFSJsonData<ETagData>(RB_TOKEN_LIST_ETAG);
-    const etag = etagData?.etag;
-    const commonHeaders = {
-      Accept: 'application/json',
-    };
-
+  async #update(): Promise<void> {
     try {
-      const { data, status, headers } = await rainbowFetch(
-        RAINBOW_TOKEN_LIST_URL,
-        {
-          headers: etag
-            ? { ...commonHeaders, 'If-None-Match': etag }
-            : { ...commonHeaders },
-          method: 'get',
-        }
+      const { newTokenList, status } = await getTokenListUpdate(
+        this.#tokenListData
       );
 
-      if (status === 200) {
-        const currentDate = new Date(this.tokenListData?.timestamp);
-        const freshDate = new Date(data?.timestamp);
-        if (freshDate > currentDate) {
-          let work = [
-            writeRNFSJsonData<TokenListData>(
-              RB_TOKEN_LIST_CACHE,
-              data as TokenListData
-            ),
-          ];
+      newTokenList
+        ? logger.debug(
+            `Token list update: new update loaded, generated on ${newTokenList?.timestamp}`
+          )
+        : status === 304
+        ? logger.debug(
+            `Token list update: no change since last update, skipping update.`
+          )
+        : logger.debug(
+            `Token list update: Token list did not update. (Status: ${status}, CurrentListDate: ${
+              this.#tokenListData?.timestamp
+            })`
+          );
 
-          if (headers.get('etag')) {
-            work.push(
-              writeRNFSJsonData<ETagData>(RB_TOKEN_LIST_ETAG, {
-                etag: headers.get('etag'),
-              })
-            );
-          }
-
-          await Promise.all(work);
-          this.tokenListData = data as TokenListData;
-          return { newData: true };
-        }
-      }
-      // handle 304 or other status codes?
-      return { newData: false };
+      if (newTokenList) this.#tokenListData = newTokenList;
     } catch (error) {
-      // TODO: more here? log?
-      return {
-        error:
-          error instanceof Error ? error : new Error(`Error updating data`),
-        newData: false,
-      };
+      logger.sentry(`Token list update error: ${(error as Error).message}`);
     } finally {
-      this.#updateJob = null; // clear update singleton
+      this.#updateJob = null;
     }
   }
 
