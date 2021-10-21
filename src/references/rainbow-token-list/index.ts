@@ -9,7 +9,7 @@ import logger from 'logger';
 
 // TODO: Make this a config value probably
 const RAINBOW_TOKEN_LIST_URL =
-  'http://metadata.p.rainbow.me/token-list/rainbow-token-list.json';
+  'https://metadata.p.rainbow.me/token-list/rainbow-token-list.json';
 
 const RB_TOKEN_LIST_CACHE = 'rb-token-list.json';
 const RB_TOKEN_LIST_ETAG = 'rb-token-list-etag.json';
@@ -74,8 +74,10 @@ async function readRNFSJsonData<T>(filename: string): Promise<T | null> {
 
     return JSON.parse(data);
   } catch (error) {
-    // TODO: handle missing file case before logging to sentry.
-    logger.error(error);
+    // @ts-ignore: Skip missing file errors.
+    if (error?.code !== 'ENOENT') {
+      logger.sentry(error);
+    }
     return null;
   }
 }
@@ -105,14 +107,16 @@ async function getTokenListUpdate(
     Accept: 'application/json',
   };
 
-  const { data, status, headers } = await rainbowFetch(RAINBOW_TOKEN_LIST_URL, {
-    headers: etag
-      ? { ...commonHeaders, 'If-None-Match': etag }
-      : { ...commonHeaders },
-    method: 'get',
-  });
-
-  if (status === 200) {
+  try {
+    const { data, status, headers } = await rainbowFetch(
+      RAINBOW_TOKEN_LIST_URL,
+      {
+        headers: etag
+          ? { ...commonHeaders, 'If-None-Match': etag }
+          : { ...commonHeaders },
+        method: 'get',
+      }
+    );
     const currentDate = new Date(currentTokenListData?.timestamp);
     const freshDate = new Date((data as TokenListData)?.timestamp);
     if (freshDate > currentDate) {
@@ -133,10 +137,20 @@ async function getTokenListUpdate(
 
       await Promise.all(work);
       return { newTokenList: data as TokenListData, status };
+    } else {
+      return { newTokenList: undefined, status };
     }
+
+    // TODO: also set an update interval to skip on so we don't make tiny network requests every time the app opens?
+  } catch (error) {
+    if (error?.response?.status !== 304) {
+      logger.sentry(error);
+    }
+    return {
+      newTokenList: undefined,
+      status: error?.response?.status,
+    };
   }
-  // TODO: also set an update interval to skip on so we don't make tiny network requests every time the app opens?
-  return { newTokenList: undefined, status };
 }
 
 class RainbowTokenList extends EventEmitter {
@@ -150,41 +164,46 @@ class RainbowTokenList extends EventEmitter {
     readRNFSJsonData<TokenListData>(RB_TOKEN_LIST_CACHE)
       .then(cachedData => {
         if (cachedData?.timestamp) {
-          const bundledDate = new Date(this.#tokenListData?.timestamp);
+          const bundledDate = new Date(this._tokenListData?.timestamp);
           const cachedDate = new Date(cachedData?.timestamp);
 
-          if (cachedDate > bundledDate) this.#tokenListData = cachedData;
+          if (cachedDate > bundledDate) this._tokenListData = cachedData;
         }
       })
-      .catch((/* err */) => {
-        // Log it somehow? Handle missing cache case?
+      .catch(error => {
+        logger.sentry(error);
+      })
+      .finally(() => {
+        logger.debug('Token list initialized');
       });
   }
 
   // Wrapping #tokenListDataStorage so we can add events around updates.
-  get #tokenListData() {
+  get _tokenListData() {
     return this.#tokenListDataStorage;
   }
 
-  set #tokenListData(val) {
+  set _tokenListData(val) {
     this.#tokenListDataStorage = val;
     this.#derivedData = generateDerivedData(RAINBOW_TOKEN_LIST_DATA);
     this.emit('update');
+    logger.debug('Token list updated');
   }
 
   update() {
     // deduplicate calls to update.
     if (!this.#updateJob) {
-      this.#updateJob = this.#update();
+      this.#updateJob = this._updateJob();
     }
 
     return this.#updateJob;
   }
 
-  async #update(): Promise<void> {
+  async _updateJob(): Promise<void> {
     try {
+      logger.debug('Token list checking for update');
       const { newTokenList, status } = await getTokenListUpdate(
-        this.#tokenListData
+        this._tokenListData
       );
 
       newTokenList
@@ -196,16 +215,20 @@ class RainbowTokenList extends EventEmitter {
             `Token list update: no change since last update, skipping update.`
           )
         : logger.debug(
-            `Token list update: Token list did not update. (Status: ${status}, CurrentListDate: ${
-              this.#tokenListData?.timestamp
-            })`
+            `Token list update: Token list did not update. (Status: ${status}, CurrentListDate: ${this._tokenListData?.timestamp})`
           );
 
-      if (newTokenList) this.#tokenListData = newTokenList;
+      if (newTokenList) {
+        this._tokenListData = newTokenList;
+      }
     } catch (error) {
+      console.error(error);
+      console.error(error.responseBody);
+      console.error(error.response.status);
       logger.sentry(`Token list update error: ${(error as Error).message}`);
     } finally {
       this.#updateJob = null;
+      logger.debug('Token list completed update check');
     }
   }
 
