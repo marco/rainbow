@@ -1,18 +1,19 @@
 import { EventEmitter } from 'events';
 import path from 'path';
 import { keyBy } from 'lodash';
+// @ts-ignore
+import { RAINBOW_TOKEN_LIST_URL } from 'react-native-dotenv';
 import RNFS from 'react-native-fs';
 import { rainbowFetch } from '../../rainbow-fetch';
 import RAINBOW_TOKEN_LIST_DATA from './rainbow-token-list.json';
 import { RainbowToken } from '@rainbow-me/entities';
 import logger from 'logger';
 
-// TODO: Make this a config value probably
-const RAINBOW_TOKEN_LIST_URL =
-  'https://metadata.p.rainbow.me/token-list/rainbow-token-list.json';
-
 const RB_TOKEN_LIST_CACHE = 'rb-token-list.json';
 const RB_TOKEN_LIST_ETAG = 'rb-token-list-etag.json';
+
+type TokenListData = typeof RAINBOW_TOKEN_LIST_DATA;
+type ETagData = { etag: string | null };
 
 const ethWithAddress: RainbowToken = {
   address: 'eth',
@@ -23,9 +24,6 @@ const ethWithAddress: RainbowToken = {
   symbol: 'ETH',
   uniqueId: 'eth',
 };
-
-type TokenListData = typeof RAINBOW_TOKEN_LIST_DATA;
-type ETagData = { etag: string | null };
 
 /**
  * generateDerivedData generates derived data lists from RAINBOW_TOKEN_LIST_DATA.
@@ -140,14 +138,16 @@ async function getTokenListUpdate(
     } else {
       return { newTokenList: undefined, status };
     }
-
-    // TODO: also set an update interval to skip on so we don't make tiny network requests every time the app opens?
   } catch (error) {
+    // TODO: type rainbow-fetch errors
+    // @ts-ignore
     if (error?.response?.status !== 304) {
+      // Log errors that are not 304 no change errors
       logger.sentry(error);
     }
     return {
       newTokenList: undefined,
+      // @ts-ignore
       status: error?.response?.status,
     };
   }
@@ -187,7 +187,7 @@ class RainbowTokenList extends EventEmitter {
     this.#tokenListDataStorage = val;
     this.#derivedData = generateDerivedData(RAINBOW_TOKEN_LIST_DATA);
     this.emit('update');
-    logger.debug('Token list updated');
+    logger.debug('Token list data replaced');
   }
 
   update() {
@@ -222,13 +222,10 @@ class RainbowTokenList extends EventEmitter {
         this._tokenListData = newTokenList;
       }
     } catch (error) {
-      console.error(error);
-      console.error(error.responseBody);
-      console.error(error.response.status);
       logger.sentry(`Token list update error: ${(error as Error).message}`);
     } finally {
       this.#updateJob = null;
-      logger.debug('Token list completed update check');
+      logger.debug('Token list completed update check.');
     }
   }
 
